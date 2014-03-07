@@ -34,6 +34,7 @@ def fetch_genomes_quantity():
     """
     Returns a dictionary containing the number of sequenced genomes available at NCBI for Bc, Bt, Ba and Bs.
     """
+
     try:
 
         genomes_quantity = {}
@@ -63,7 +64,7 @@ def fetch_genomes_quantity():
         return genomes_quantity
 
     except urllib.request.URLError:
-        print("Error:\nCould not reach NCBI's website.\nPlease check your internet connection and retry.")
+        print("\nError:\nCould not reach NCBI's website.\nPlease check your internet connection and retry.\n")
         sys.exit(0)
 
 
@@ -71,18 +72,52 @@ def blast():
     """
     BLASTs protein sequence at NCBI and writes the result in a "blast_results.xml" file in the execution directory.
     """
-    seq = sys.argv[sys.argv.index('--www') + 1]
-    query = NCBIWWW.qblast('blastp', 'nr', seq, hitlist_size=500)
-    of_ = open('blast_results.xml', 'w')
-    of_.write(query.read())
-    of_.close()
-    query.close()
+
+    try:
+        seq = sys.argv[sys.argv.index('--www') + 1]
+        # Check before BLASTing that only protein characters were provided.
+        anti_aminoacids = re.compile('[^AaBbCcDdEeFfGgHhIiKkLlMmNnPpQqRrSsTtUuVvWwYyZzXx\*\-]')
+        if len(anti_aminoacids.findall(seq)) == 0:
+            try:
+                query = NCBIWWW.qblast('blastp', 'nr', seq, hitlist_size=500)
+            except urllib.error.URLError:
+                print("\nError:\nCould not reach NCBI's website.\nPlease check your internet connection and retry.\n")
+                sys.exit(0)
+            of_ = open('blast_results.xml', 'w')
+            of_.write(query.read())
+            of_.close()
+            query.close()
+        else:
+            print("\nError:\nPlease provide a valid protein sequence\nAllowed characters: ABCDEFGHIKLMNPQRSTUVWXYZ*-\n")
+            sys.exit(0)
+    except IndexError:
+        print("\nError:\nPlease provide a sequence to BLAST.\n")
+        sys.exit(0)
 
 
 def main():
+    identity_threshold = .8
+    query_cover_threshold = .95
     verbose = False
+
     if '-v' in sys.argv:
         verbose = True
+
+    if '--identity' in sys.argv:
+        identity_threshold = float(sys.argv[sys.argv.index('--identity') + 1])
+        if verbose:
+            print("Setting identity threshold to {} (user request)".format(identity_threshold))
+    else:
+        if verbose:
+            print("Setting identity threshold to {} (default)".format(identity_threshold))
+
+    if '--coverage' in sys.argv:
+        query_cover_threshold = float(sys.argv[sys.argv.index('--coverage') + 1])
+        if verbose:
+            print("Setting query coverage threshold to {} (user request)".format(query_cover_threshold))
+    else:
+        if verbose:
+            print("Setting query coverage threshold to {} (default)".format(query_cover_threshold))
 
     if '--www' in sys.argv:
         if verbose:
@@ -95,32 +130,42 @@ def main():
     if verbose:
         print("Retrieving genomes quantities at NCBI...")
     genomes = fetch_genomes_quantity()
-    identity_threshold = .75
 
     if verbose:
         print("Parsing BLAST results...")
-    results_handle = open('blast_results.xml')
-    results = NCBIXML.read(results_handle)
+
+    try:
+        results_handle = open('blast_results.xml')
+    except FileNotFoundError:
+        print("\nError:\nResults file could not be found. Please BLAST a sequence and retry.\n")
+        sys.exit(0)
+    try:
+        results = NCBIXML.read(results_handle)
+    except ValueError:
+        print("\nError:\nCould not read your XML results file (is it empty?). Please check it and retry\n")
+        sys.exit(0)
+
     for result in results.alignments:
-        for hsp in result.hsps:
-            if hsp.identities / results.query_letters > identity_threshold:
-                organism_list = fetch_organism(result.title)
-                for organism in organism_list:
-                    if organism not in total:
-                        total.append(organism)
-                        if "Bacillus" in organism:
-                            bacilli.append(organism)
-                            if "cereus" in organism:
-                                bc.append(organism)
-                            elif "thuringiensis" in organism:
-                                bt.append(organism)
-                            elif "anthracis" in organism:
-                                ba.append(organism)
-                            elif "subtilis" in organism:
-                                bs.append(organism)
-                            else:
-                                sp.append(organism)
-                break
+        hsp = result.hsps[0]
+        query_cover = (len(hsp.sbjct) - hsp.sbjct_start) / results.query_letters
+        identity = hsp.identities / len(hsp.sbjct)
+        if query_cover > query_cover_threshold and identity > identity_threshold:
+            organism_list = fetch_organism(result.title)
+            for organism in organism_list:
+                # if organism not in total:
+                total.append(organism)
+                if "Bacillus" in organism:
+                    bacilli.append(organism)
+                    if "cereus" in organism:
+                        bc.append(organism)
+                    elif "thuringiensis" in organism:
+                        bt.append(organism)
+                    elif "anthracis" in organism:
+                        ba.append(organism)
+                    elif "subtilis" in organism:
+                        bs.append(organism)
+                    else:
+                        sp.append(organism)
 
     print('==============================')
     print("Total: {}".format(len(total)))
