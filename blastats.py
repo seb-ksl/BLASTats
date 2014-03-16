@@ -7,6 +7,32 @@ import urllib.request
 from Bio.Blast import NCBIWWW, NCBIXML
 
 
+def help_():
+    bold = "\033[1m"
+    nobold = "\033[0m"
+
+    print("\nBLASTats\n========\n")
+    print("Description\n-----------\n")
+    print("BLASTats helps you see how your protein of interest is distributed among B.cereus group.\n"
+          "This program must be run in a console (Linux), terminal (Mac), or cmd (Windows)")
+    print("\nSyntax\n------\n")
+    print("blastats.pyc [-h] [-v] [-l] [--identity x] [--coverage y] [-www sequence]")
+    print("\nParameters\n----------\n")
+    print(bold + "-h\n" + nobold + "show this help message and exit.\n" +
+          bold + "-v\n" + nobold + "make the program verbose. The program will then let you know what it is doing by"
+                                   "printing messages to the console output.\n" +
+          bold + "-l\n" + nobold + "print full list of organisms in which the query protein was found instead of tree"
+                                   "only.\n" +
+          bold + "--identity\n" + nobold + "set the required identity between your query sequence and the subject"
+                                           "to consider that they are potential functional homologues.\n"
+                                           "Default value: 0.8\n" +
+          bold + "--coverage\n" + nobold + "set the required query coverage of your query sequence by the subject"
+                                           "to consider thant they are potential functional homologues.\n"
+                                           "Default value: 0.95\n" +
+          bold + "--www\n" + nobold + "blast the subsequent protein sequence against NCBI's database.\n"
+                                      "Allowed characters (case insensitive): ABCDEFGHIKLMNPQRSTUVWYZX*-\n")
+
+
 def fetch_organism(string):
     """
     Returns a list containing organisms names contained in BLAST match title.
@@ -96,6 +122,11 @@ def blast():
 
 
 def main():
+
+    if '-h' in sys.argv:
+        help_()
+        sys.exit()
+
     identity_threshold = .8
     query_cover_threshold = .95
     verbose = False
@@ -137,7 +168,8 @@ def main():
     try:
         results_handle = open('blast_results.xml')
     except FileNotFoundError:
-        print("\nError:\nResults file could not be found. Please BLAST a sequence and retry.\n")
+        print("\nError:\nResults file could not be found. Please BLAST a sequence and retry.\n"
+              "For help, run " + sys.argv[0] + " -h\n")
         sys.exit(0)
     try:
         results = NCBIXML.read(results_handle)
