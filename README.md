@@ -4,13 +4,16 @@ BLASTats
 Description
 -----------
 
-BLASTats BLASTs your protein sequence and tells you how it is distributed among <i>B. cereus</i> group.
-
+BLASTats helps you see how your protein of interest is distributed among <i>B. cereus</i> group.
+This program must be run in a console (Linux), terminal (Mac), or cmd (Windows).
 
 Syntax
 ------
 
-./blastats.py(c) [-v] [-l] [--identity] [--coverage] [--www protein_sequence]<br /><br />
+./blastats.py(c) [-v] [-l] [--identity] [--coverage] [--www protein_sequence]
+
+Parameters
+----------
 
 * -v: verbose mode
 * -l: lists precisely all hits in <i>B. cereus</i> group
