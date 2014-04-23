@@ -296,20 +296,20 @@ class Compute(object):
                 if query_cover > self.query_cover_threshold and identity > self.identity_threshold:
                     organism_list = self.fetch_organism(result.title)
                     for organism in organism_list:
-                        # if organism not in total:
-                        total.append(organism)
-                        if "Bacillus" in organism:
-                            bacilli.append(organism)
-                            if "cereus" in organism:
-                                bc.append(organism)
-                            elif "thuringiensis" in organism:
-                                bt.append(organism)
-                            elif "anthracis" in organism:
-                                ba.append(organism)
-                            elif "subtilis" in organism:
-                                bs.append(organism)
-                            else:
-                                sp.append(organism)
+                        if organism not in total:
+                            total.append(organism)
+                            if "Bacillus" in organism:
+                                bacilli.append(organism)
+                                if "cereus" in organism:
+                                    bc.append(organism)
+                                elif "thuringiensis" in organism:
+                                    bt.append(organism)
+                                elif "anthracis" in organism:
+                                    ba.append(organism)
+                                elif "subtilis" in organism:
+                                    bs.append(organism)
+                                else:
+                                    sp.append(organism)
 
             GObject.idle_add(self.parent.print_, '==============================')
             GObject.idle_add(self.parent.print_, "Total: {}".format(len(total)))
