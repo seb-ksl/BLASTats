@@ -9,6 +9,7 @@ from Bio.Blast import NCBIWWW, NCBIXML
 from gi.repository import Gtk, GObject
 import threading
 
+# ToDo: sort results before printing
 
 class Iface(Gtk.Window):
     def __init__(self):
@@ -30,26 +31,55 @@ class Iface(Gtk.Window):
         grid_sequence.add(label_sequence)
         grid_sequence.attach(self.entry_sequence, 1, 0, 1, 1)
 
+        grid_organisms = Gtk.Grid()
+        label_organism = Gtk.Label("Organism: ")
+        self.entry_organism = Gtk.Entry()
+        self.entry_organism.set_placeholder_text("Organism name")
+        self.entry_organism.connect("key-press-event", self.on_organism_add)
+        scroll_organism = Gtk.ScrolledWindow()
+        scroll_organism.set_min_content_height(60)
+        scroll_organism.set_min_content_width(200)
+        self.liststore_organism = Gtk.ListStore(str)
+        self.liststore_organism.append(("Bacillus cereus",))
+        self.liststore_organism.append(("Bacillus thuringiensis",))
+        self.liststore_organism.append(("Bacillus anthracis",))
+        self.liststore_organism.append(("Bacillus subtilis",))
+        renderer_organism = Gtk.CellRendererText()
+        self.treeview_organism = Gtk.TreeView(model=self.liststore_organism)
+        self.treeview_organism.append_column(Gtk.TreeViewColumn("Organism", renderer_organism, text=0))
+        self.treeview_organism.set_headers_visible(False)
+        self.treeview_organism.connect("button-press-event", self.on_treeview_click)
+        scroll_organism.add(self.treeview_organism)
+        grid_organisms.add(label_organism)
+        grid_organisms.attach(self.entry_organism, 1, 0, 1, 1)
+        grid_organisms.attach(scroll_organism, 2, 0, 1, 1)
+
         frame_options = Gtk.Frame(label="Options")
-        frame_options.set_hexpand(True)
+        # frame_options.set_hexpand(True)
         grid_options = Gtk.Grid()
-        grid_options.set_hexpand(True)
+        # grid_options.set_hexpand(True)
         label_idthresh = Gtk.Label('Identity threshold: ')
         label_idthresh.set_alignment(0, 0.5)
         label_covthresh = Gtk.Label('Coverage threshold: ')
-        label_pc1 = Gtk.Label("%                                  ")
-        label_pc2 = Gtk.Label("%                                  ")
+        label_pc1 = Gtk.Label("%         ")
+        label_pc2 = Gtk.Label("%         ")
         self.entry_idthresh = Gtk.Entry()
         self.entry_idthresh.set_max_length(3)
         self.entry_idthresh.set_width_chars(3)
+        self.entry_idthresh.set_max_width_chars(3)
+        self.entry_idthresh.set_halign(Gtk.Align.START)
+        self.entry_idthresh.set_size_request(20, -1)
         self.entry_idthresh.set_placeholder_text("80")
         self.entry_covthresh = Gtk.Entry()
         self.entry_covthresh.set_max_length(3)
         self.entry_covthresh.set_width_chars(3)
+        self.entry_covthresh.set_max_width_chars(3)
+        self.entry_covthresh.set_halign(Gtk.Align.START)
         self.entry_covthresh.set_placeholder_text("95")
         self.check_verbose = Gtk.CheckButton("Verbose")
         self.check_verbose.set_active(True)
         self.check_list = Gtk.CheckButton("List all species")
+        self.check_fasta = Gtk.CheckButton("Save results in FASTA")
         grid_options.add(label_idthresh)
         grid_options.attach(label_covthresh, 0, 1, 1, 1)
         grid_options.attach(self.entry_idthresh, 1, 0, 1, 1)
@@ -58,6 +88,7 @@ class Iface(Gtk.Window):
         grid_options.attach(label_pc2, 2, 1, 1, 1)
         grid_options.attach(self.check_verbose, 3, 0, 1, 1)
         grid_options.attach(self.check_list, 3, 1, 1, 1)
+        grid_options.attach(self.check_fasta, 3, 2, 1, 1)
         frame_options.add(grid_options)
 
         grid_buttons = Gtk.Grid()
@@ -92,14 +123,15 @@ class Iface(Gtk.Window):
         grid_footer.attach(button_quit, 1, 0, 1, 1)
 
         grid.add(grid_sequence)
-        grid.attach(frame_options, 0, 1, 1, 1)
-        grid.attach(grid_buttons, 0, 2, 1, 1)
-        grid.attach(frame_output, 0, 3, 1, 1)
-        grid.attach(grid_footer, 0, 4, 1, 1)
+        grid.attach(grid_organisms, 0, 1, 1, 1)
+        grid.attach(frame_options, 0, 2, 1, 1)
+        grid.attach(grid_buttons, 0, 3, 1, 1)
+        grid.attach(frame_output, 0, 4, 1, 1)
+        grid.attach(grid_footer, 0, 5, 1, 1)
 
     def print_(self, txt):
         buf = self.txtview_output.get_buffer()
-        buf.insert(buf.get_end_iter(), txt + '\n')
+        buf.insert(buf.get_end_iter(), str(txt) + '\n')
 
     def help_(self, *args):
         self.clear_output()
@@ -132,11 +164,24 @@ class Iface(Gtk.Window):
                 self.print_("Error:\nPlease provide a valid protein sequence\n"
                             "Allowed characters: ABCDEFGHIKLMNPQRSTUVWXYZ*-\n")
 
+        organisms = {}
+        for row in self.liststore_organism:
+            organism = row[0].replace(" ", "+").lower()
+            genus = organism.split("+")[0]
+            if genus not in organisms.keys():
+                organisms[genus] = []
+            organisms[genus].append(organism)
+        print(organisms)
+        kwargs['organisms'] = organisms
+
         if self.check_verbose.get_active():
             kwargs['verbose'] = True
 
         if self.check_list.get_active():
             kwargs['details'] = True
+
+        if self.check_fasta.get_active():
+            kwargs['fasta'] = True
 
         if self.entry_idthresh.get_text() != "":
             try:
@@ -157,6 +202,28 @@ class Iface(Gtk.Window):
                 self.parent.print_("Error:\nPlease provide a query coverage threshold")
 
         return kwargs
+
+    def on_organism_add(self, widget, event):
+        if event.keyval == 65293 or event.keyval == 65421:
+            organism = self.entry_organism.get_text()
+            if len(organism.split()) == 2:
+                organism = organism.capitalize()
+                self.liststore_organism.append((organism,))
+            else:
+                self.print_("Error: organism name must be 2 words long.")
+
+    def on_treeview_click(self, widget, event):
+        if event.button == 3:
+            # Determine what row is under the cursor. path[0] is the row number, path[1] is the column,
+            # path[3] is cell(x) and path[4] is cell(y)
+            path = self.treeview_organism.get_path_at_pos(event.x, event.y)
+            if path is not None:
+                # Set keyboard focus to treeview
+                self.treeview_organism.grab_focus()
+                # Set keyboard focus to the right row and column
+                self.treeview_organism.set_cursor(path[0], path[1], 0)
+                model, row = self.treeview_organism.get_selection().get_selected()
+                self.liststore_organism.remove(row)
 
     def on_blast_click(self, *args):
         kwargs = self.fetch_arguments(check_seq=True)
@@ -182,12 +249,14 @@ class Iface(Gtk.Window):
 
 
 class Compute(object):
-    def __init__(self, parent, seq="", verbose=False, details=False, identity_threshold=0.8,
+    def __init__(self, parent, organisms, seq="", verbose=False, details=False, fasta=False, identity_threshold=0.8,
                  query_cover_threshold=0.95):
         self.parent = parent
+        self.organisms = organisms
         self.seq = seq
         self.verbose = verbose
         self.details = details
+        self.fasta = fasta
         self.identity_threshold = identity_threshold
         self.query_cover_threshold = query_cover_threshold
 
@@ -207,8 +276,7 @@ class Compute(object):
 
         return matchlist
 
-    @staticmethod
-    def fetch_genomes_quantity():
+    def fetch_genomes_quantity(self):
         """
         Returns a dictionary containing the number of sequenced genomes available at NCBI for Bc, Bt, Ba and Bs.
         """
@@ -216,28 +284,27 @@ class Compute(object):
         try:
 
             genomes_quantity = {}
-            for organism in ['bacillus+cereus', 'bacillus+thuringiensis', 'bacillus+anthracis', 'bacillus+subtilis']:
-                ans_bc = urllib.request.urlopen("http://www.ncbi.nlm.nih.gov/genome/?term={}".format(organism))
-                page_bc = ans_bc.read()
-                # Because ans.read() returns a byte string while regex findall takes unicode strings
-                page_bc = page_bc.decode()
+            for genus in self.organisms:
+                for organism in self.organisms[genus]:
+                    ans_bc = urllib.request.urlopen("http://www.ncbi.nlm.nih.gov/genome/?term={}".format(organism))
+                    page_bc = ans_bc.read()
+                    # Because ans.read() returns a byte string while regex findall takes unicode strings
+                    page_bc = page_bc.decode()
 
-                # What is retrieved from NCBI's page here are 3 occurences of numbers between brackets being
-                # respectively the number of genomes, scaffolds/contigs and SRA/traces
-                pattern = re.compile('\[(\d+)\]')
-                grep = pattern.findall(page_bc)
-                # Convert strings list to ints list
-                for i in range(len(grep)):
-                    grep[i] = int(grep[i])
+                    if "Organism Overview" in page_bc:
+                        # What is retrieved from NCBI's page here are 3 occurences of numbers between brackets being
+                        # respectively the number of genomes, scaffolds/contigs and SRA/traces
+                        pattern = re.compile('\[(\d+)\]')
+                        grep = pattern.findall(page_bc)
+                        # Convert strings list to ints list
+                        for i in range(len(grep)):
+                            grep[i] = int(grep[i])
 
-                if organism == 'bacillus+cereus':
-                    genomes_quantity['bc'] = sum(grep)
-                elif organism == 'bacillus+thuringiensis':
-                    genomes_quantity['bt'] = sum(grep)
-                elif organism == 'bacillus+anthracis':
-                    genomes_quantity['ba'] = sum(grep)
-                elif organism == 'bacillus+subtilis':
-                    genomes_quantity['bs'] = sum(grep)
+                        genomes_quantity[organism] = sum(grep)
+
+                    else:
+                        GObject.idle_add(self.parent.print_, "Could not find organism '" + organism.replace("+", " ") +
+                                                             "' in NCBI's database. Dropping it from analysis")
 
             return genomes_quantity
 
@@ -270,7 +337,8 @@ class Compute(object):
                              format(self.query_cover_threshold))
 
         # Lists containing hits for each member
-        total, bacilli, bc, bt, ba, bs, sp = [], [], [], [], [], [], []
+        total = {}
+        organisms_tree = {}
         # Dictionary containing number of sequenced genomes for each member
         if self.verbose:
             GObject.idle_add(self.parent.print_, "Retrieving genomes quantities at NCBI...")
@@ -297,56 +365,58 @@ class Compute(object):
                     organism_list = self.fetch_organism(result.title)
                     for organism in organism_list:
                         if organism not in total:
-                            total.append(organism)
-                            if "Bacillus" in organism:
-                                bacilli.append(organism)
-                                if "cereus" in organism:
-                                    bc.append(organism)
-                                elif "thuringiensis" in organism:
-                                    bt.append(organism)
-                                elif "anthracis" in organism:
-                                    ba.append(organism)
-                                elif "subtilis" in organism:
-                                    bs.append(organism)
-                                else:
-                                    sp.append(organism)
+                            # If this organism's protein passed all tests, a tuple (organism's name, sequence) is added
+                            # to the main list and to an adequate sub-list.
+                            total[organism] = hsp.sbjct
+                            # Append here to sublists
+                            genus = organism.split()[0]
+                            specie = organism.split()[1]
+
+                            if genus not in organisms_tree:
+                                organisms_tree[genus] = {}
+                            if specie not in organisms_tree[genus]:
+                                organisms_tree[genus][specie] = []
+
+                            organisms_tree[genus][specie].append((organism, hsp.sbjct))
 
             GObject.idle_add(self.parent.print_, '==============================')
             GObject.idle_add(self.parent.print_, "Total: {}".format(len(total)))
-            GObject.idle_add(self.parent.print_, "|-Bacilli: {}".format(len(bacilli)))
-            GObject.idle_add(self.parent.print_, "|--- cereus: {0} ({1}%)".
-                             format(len(bc), int(len(bc) / genomes['bc'] * 100)))
-            GObject.idle_add(self.parent.print_, "|--- thuringiensis: {0} ({1}%)".
-                             format(len(bt), int(len(bt) / genomes['bt'] * 100)))
-            GObject.idle_add(self.parent.print_, "|--- anthracis: {0} ({1}%)".
-                             format(len(ba), int(len(ba) / genomes['ba'] * 100)))
-            GObject.idle_add(self.parent.print_, "|--- subtilis: {0} ({1}%)".
-                             format(len(bs), int(len(bs) / genomes['bs'] * 100)))
-            GObject.idle_add(self.parent.print_, "|--- Other Bacilli: {}".format(len(sp)))
-            GObject.idle_add(self.parent.print_, "|-Other non-Bacilli: {}".format(len(total)-len(bacilli)))
+            for genus_of_interest in self.organisms:
+                if genus_of_interest.capitalize() in organisms_tree:
+                    GObject.idle_add(self.parent.print_, "|-" + genus_of_interest.capitalize())
+                    for specie_of_interest in self.organisms[genus_of_interest]:
+                        specie_of_interest = specie_of_interest.split("+")[1]
+                        if specie_of_interest in organisms_tree[genus_of_interest.capitalize()]:
+                            nb_species_hits = len(organisms_tree[genus_of_interest.capitalize()][specie_of_interest])
+                            nb_species_genomes = genomes[genus_of_interest + "+" + specie_of_interest]
+                            abundance = nb_species_hits / nb_species_genomes
+                            GObject.idle_add(self.parent.print_, "|---" + specie_of_interest + ": " + str(round(abundance * 100)) + "%\t(" + str(nb_species_hits) + "/" + str(nb_species_genomes) + ")")
             GObject.idle_add(self.parent.print_, '==============================')
 
             if self.details:
-                bc.sort()
-                bt.sort()
-                ba.sort()
-                bs.sort()
-                sp.sort()
-                GObject.idle_add(self.parent.print_, "\nBacillus cereus:\n-----------------------")
-                for bac in bc:
-                    GObject.idle_add(self.parent.print_, bac)
-                GObject.idle_add(self.parent.print_, "\nBacillus thuringiensis:\n-----------------------")
-                for bac in bt:
-                    GObject.idle_add(self.parent.print_, bac)
-                GObject.idle_add(self.parent.print_, "\nBacillus anthracis:\n-----------------------")
-                for bac in ba:
-                    GObject.idle_add(self.parent.print_, bac)
-                GObject.idle_add(self.parent.print_, "\nBacillus subtilis:\n-----------------------")
-                for bac in bs:
-                    GObject.idle_add(self.parent.print_, bac)
-                GObject.idle_add(self.parent.print_, "\nOther Bacilli:\n-----------------------")
-                for bac in sp:
-                    GObject.idle_add(self.parent.print_, bac)
+                GObject.idle_add(self.parent.print_, "\n\n")
+                for genus in organisms_tree:
+                    GObject.idle_add(self.parent.print_, "\n" + genus + "\n==============================")
+                    for specie in organisms_tree[genus]:
+                        GObject.idle_add(self.parent.print_, "\n" + specie + "\n------------------------------")
+                        for strain in organisms_tree[genus][specie]:
+                            GObject.idle_add(self.parent.print_, strain[0])
+
+            if self.fasta:
+                self.record_fasta(total)
+
+    def record_fasta(self, org_seq_dic):
+        try:
+            outf_handle = open("sequences.fa", "w")
+        except:
+            GObject.idle_add(self.parent.print_, "Error while opening sequences file. Could not save them.")
+        else:
+            GObject.idle_add(self.parent.print_, "Saving results in sequences.fa...")
+            for org in org_seq_dic:
+                outf_handle.write(">" + org + "\n" + org_seq_dic[org] + "\n\n")
+
+            outf_handle.close()
+            GObject.idle_add(self.parent.print_, "All done.")
 
 
 def main():
