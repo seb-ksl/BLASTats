@@ -18,6 +18,7 @@ class Iface(Gtk.Window):
         self.set_default_size(800, 600)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.connect("key-press-event", self.on_key_press)
+        self.connect("delete-event", self.quit)
 
         grid = Gtk.Grid()
         grid.set_row_spacing(10)
@@ -77,7 +78,6 @@ class Iface(Gtk.Window):
         self.entry_covthresh.set_halign(Gtk.Align.START)
         self.entry_covthresh.set_placeholder_text("95")
         self.check_verbose = Gtk.CheckButton("Verbose")
-        self.check_verbose.set_active(True)
         self.check_list = Gtk.CheckButton("List all species")
         self.check_fasta = Gtk.CheckButton("Save results in FASTA")
         grid_options.add(label_idthresh)
@@ -128,6 +128,36 @@ class Iface(Gtk.Window):
         grid.attach(grid_buttons, 0, 3, 1, 1)
         grid.attach(frame_output, 0, 4, 1, 1)
         grid.attach(grid_footer, 0, 5, 1, 1)
+
+        self.read_settings()
+
+    def read_settings(self):
+        try:
+            fhandle = open("settings.ini", "r")
+        except FileNotFoundError:
+            pass
+        else:
+            settings_content = fhandle.readlines()
+            print(settings_content)
+
+            if "check_verbose\n" in settings_content:
+                self.check_verbose.set_active(True)
+            if "check_list\n" in settings_content:
+                self.check_list.set_active(True)
+            if "check_fasta\n" in settings_content:
+                self.check_fasta.set_active(True)
+
+            for setting in settings_content:
+                if "identity" in setting:
+                    idthresh = setting.split("=")[-1].rstrip("\n")
+                    self.entry_idthresh.set_text(idthresh)
+                elif "qcov" in setting:
+                    covthresh = setting.split("=")[-1].rstrip("\n")
+                    self.entry_covthresh.set_text(covthresh)
+
+            start = settings_content.index("[organisms]\n")
+            for organism in settings_content[start:]:
+                self.liststore_organism.append((organism.rstrip("\n"),))
 
     def print_(self, txt):
         buf = self.txtview_output.get_buffer()
@@ -240,11 +270,31 @@ class Iface(Gtk.Window):
         compute = Compute(self, **kwargs)
         threading.Thread(target=compute.analyse).start()
 
-    @staticmethod
-    def on_key_press(widget, event):
+    def on_key_press(self, widget, event):
         if event.keyval == 65293 or event.keyval == 65421:
             pass
         if event.keyval == 65307:
+            self.quit()
+
+    def quit(self, *args):
+        try:
+            fhandle = open("settings.ini", "w")
+        except:
+            pass
+        else:
+            if self.check_verbose.get_active():
+                fhandle.write("check_verbose\n")
+            if self.check_list.get_active():
+                fhandle.write("check_list\n")
+            if self.check_fasta.get_active():
+                fhandle.write("check_fasta\n")
+            fhandle.write("identity=" + self.entry_idthresh.get_text() + "\n")
+            fhandle.write("qcov=" + self.entry_covthresh.get_text() + "\n")
+            fhandle.write("[organisms]\n")
+            for row in self.liststore_organism:
+                fhandle.write(row[0] + "\n")
+        finally:
+            fhandle.close()
             Gtk.main_quit()
 
 
