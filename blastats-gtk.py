@@ -1,8 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+#
+#  pystrains.py
+#
+#  Copyright 2013-2014 Sébastien Gélis-Jeanvoine <sebastien@gelis.ch>
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 3 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, see <http://www.gnu.org/licenses/>.
+#
 
 import sys
-sys.path.append(sys.path[0] + "/res")
+sys.path.append("{}/res".format(sys.path[0]))
 from Bio.Blast import NCBIWWW, NCBIXML
 from gi.repository import Gtk, GObject
 import pickle
@@ -11,12 +29,11 @@ import re
 import threading
 import urllib.request
 
-import timeit
-
-# ToDo: button help
-
 
 class Iface(Gtk.Window):
+    """
+    GTK interface class.
+    """
     def __init__(self):
         Gtk.Window.__init__(self, title="BLASTats")
         self.set_resizable(False)
@@ -30,7 +47,7 @@ class Iface(Gtk.Window):
         self.add(grid)
 
         grid_sequence = Gtk.Grid()
-        label_sequence = Gtk.Label('Sequence:')
+        label_sequence = Gtk.Label("Sequence:")
         label_sequence.set_alignment(0, 0.5)
         self.entry_sequence = Gtk.Entry()
         self.entry_sequence.set_width_chars(46)
@@ -57,12 +74,10 @@ class Iface(Gtk.Window):
         grid_organisms.attach(scroll_organism, 2, 0, 1, 1)
 
         frame_options = Gtk.Frame(label="Options")
-        # frame_options.set_hexpand(True)
         grid_options = Gtk.Grid()
-        # grid_options.set_hexpand(True)
-        label_idthresh = Gtk.Label('Identity threshold: ')
+        label_idthresh = Gtk.Label("Identity threshold: ")
         label_idthresh.set_alignment(0, 0.5)
-        label_covthresh = Gtk.Label('Coverage threshold: ')
+        label_covthresh = Gtk.Label("Coverage threshold: ")
         label_pc1 = Gtk.Label("%         ")
         label_pc2 = Gtk.Label("%         ")
         self.entry_idthresh = Gtk.Entry()
@@ -152,11 +167,11 @@ class Iface(Gtk.Window):
 
     def print_(self, txt):
         buf = self.txtview_output.get_buffer()
-        buf.insert(buf.get_end_iter(), str(txt) + '\n')
+        buf.insert(buf.get_end_iter(), "{}\n".format(str(txt)))
 
     def help_(self, *args):
         self.clear_output()
-        self.print_("HELP")
+        self.print_("For help, see http://www.gelis.ch/programs/blastats/")
 
     def clear_output(self, *args):
         buf = self.txtview_output.get_buffer()
@@ -167,18 +182,18 @@ class Iface(Gtk.Window):
 
         if check_seq:
             seq = self.entry_sequence.get_text().replace("\n", "")
-            anti_aminoacids = re.compile('[^AaBbCcDdEeFfGgHhIiKkLlMmNnPpQqRrSsTtUuVvWwYyZzXx\*\-]')
+            anti_aminoacids = re.compile("[^AaBbCcDdEeFfGgHhIiKkLlMmNnPpQqRrSsTtUuVvWwYyZzXx\*\-]")
             if len(anti_aminoacids.findall(seq)) == 0:
-                kwargs['seq'] = seq
+                kwargs["seq"] = seq
             else:
                 self.print_("Error:\nPlease provide a valid protein sequence\n"
                             "Allowed characters: ABCDEFGHIKLMNPQRSTUVWXYZ*-\n")
 
-        organisms = list()
+        organisms = []
         for row in self.liststore_organism:
-            organisms.append(row[0].replace(" ", "+").lower())
+            organisms.append(row[0].replace(" ", "+"))
         organisms.sort()
-        kwargs['organisms'] = organisms
+        kwargs["organisms"] = organisms
 
         kwargs["verbose"] = self.check_verbose.get_active()
         kwargs["details"] = self.check_list.get_active()
@@ -187,7 +202,7 @@ class Iface(Gtk.Window):
         if self.entry_idthresh.get_text() != "":
             try:
                 if 100 >= int(self.entry_idthresh.get_text()) >= 0:
-                    kwargs['identity_threshold'] = int(self.entry_idthresh.get_text())/100
+                    kwargs["identity_threshold"] = int(self.entry_idthresh.get_text())/100
                 else:
                     self.print_("Error:\nIdentity threshold must be between 0 and 100")
             except ValueError:
@@ -196,7 +211,7 @@ class Iface(Gtk.Window):
         if self.entry_covthresh.get_text() != "":
             try:
                 if 100 >= int(self.entry_covthresh.get_text()) >= 0:
-                    kwargs['query_cover_threshold'] = int(self.entry_covthresh.get_text()) / 100
+                    kwargs["query_cover_threshold"] = int(self.entry_covthresh.get_text()) / 100
                 else:
                     self.print_("Error:\nQuery coverage threshold must be between 0 and 100")
             except ValueError:
@@ -255,7 +270,7 @@ class Iface(Gtk.Window):
         except PermissionError:
             pass
         else:
-            settings = dict()
+            settings = {}
             settings["verbose"] = self.check_verbose.get_active()
             settings["list"] = self.check_list.get_active()
             settings["fasta"] = self.check_fasta.get_active()
@@ -271,10 +286,22 @@ class Iface(Gtk.Window):
 
 
 class Compute(object):
+    """
+    Computing object.
+    The compute object takes parameters given by the interface and:
+    1) -Optional- BLASTs the protein sequence
+    2) Fetches the number of sequenced genomes at NCBI's database
+    3) Parses the BLAST's XML output to
+        3.1) find the organisms in each sequence match
+        3.2) build a tree of organisms given their genus and specie
+    4) Outputs a tree of species of interest (inputted by interface), computing for each specie the abundance of the
+       query sequence (given by the number of species listed in the matches tree under
+       [genus_of_interest][specie_of_interest]) and the fraction of sequenced organisms it represents.
+    """
     def __init__(self, parent, organisms, seq="", verbose=False, details=False, fasta=False, identity_threshold=0.8,
                  query_cover_threshold=0.95):
         self.parent = parent
-        self.organisms = organisms
+        self.organisms_of_interest = organisms
         self.seq = seq
         self.verbose = verbose
         self.details = details
@@ -283,6 +310,9 @@ class Compute(object):
         self.query_cover_threshold = query_cover_threshold
 
     def get_url(self, organism, url, q):
+        """
+        Threaded method that gets a URL and puts its content in a threaded queue.
+        """
         try:
             # Decode because .read() returns a byte string while re.findall() takes unicode strings
             page = urllib.request.urlopen(url).read().decode()
@@ -293,32 +323,17 @@ class Compute(object):
         else:
             q.put((organism, page))
 
-    @staticmethod
-    def fetch_organism(string):
-        """
-        Returns a list containing organisms names contained in BLAST match title.
-        Names are filtered to ignore names < 2 words (like "Bacillus cereus"), names containing "group" and names
-        repeated several times in a single BLAST match title.
-        """
-
-        pattern = re.compile('\[(.*?)\]')
-        matchlist = []
-        for match in pattern.findall(string):
-            if match not in matchlist and "group" not in match and len(match.split()) > 2:
-                matchlist.append(match)
-
-        return matchlist
-
     def fetch_genomes_quantity(self):
         """
-        Fills a dictionary containing the number of sequenced genomes available at NCBI for Bc, Bt, Ba and Bs.
+        Returns a dictionary containing the number of sequenced genomes available at NCBI for species of interest.
+        URL requests are threaded via get_url(), and the results queue is read after all threads are done.
         """
 
-        genomes = dict()
+        genomes = {}
         q = queue.Queue()
-        threads = list()
+        threads = []
 
-        for organism in self.organisms:
+        for organism in self.organisms_of_interest:
             url = "http://www.ncbi.nlm.nih.gov/genome/?term={}".format(organism)
             threads.append(threading.Thread(target=self.get_url, args=(organism, url, q)))
 
@@ -327,56 +342,74 @@ class Compute(object):
         for thread in threads:
             thread.join()
 
-        pattern = re.compile("genome assemblies: (\d+)")
+        regex_genomes = re.compile("genome assemblies: (\d+)")
 
         while not q.empty():
             organism, page_organism = q.get()
             if isinstance(page_organism, type(None)) or not "Organism Overview" in page_organism:
                 GObject.idle_add(self.parent.print_, "Could not find organism '{}' in NCBI's database. "
                                                      "Dropping it from analysis".format(organism.replace("+", " ")))
-                self.organisms.remove(organism)
+                self.organisms_of_interest.remove(organism)
             else:
-                genomes[organism] = int(pattern.findall(page_organism)[0])
+                genomes[organism] = int(regex_genomes.findall(page_organism)[0])
 
         return genomes
 
+    @staticmethod
+    def fetch_organism(string):
+        """
+        Returns a list containing organisms names contained in BLAST match title.
+        Names are filtered to ignore names < 2 words (like "Bacillus cereus"), names containing "group" and names
+        repeated several times in a single BLAST match title (by list(set(list))).
+        """
+
+        pattern = re.compile("\[(.*?)\]")
+        matchlist = set()
+        for match in pattern.findall(string):
+            if "group" not in match and len(match.split()) > 2:
+                matchlist.add(match)
+
+        return list(matchlist)
+
     def blast(self):
         """
-        BLASTs protein sequence at NCBI and writes the result in a "blast_results.xml" file in the execution directory.
+        BLASTs protein sequence at NCBI and outputs the result in a "blast_results.xml" file in the execution directory.
         """
 
         try:
-            query = NCBIWWW.qblast('blastp', 'nr', self.seq, hitlist_size=500)
-        except urllib.error.URLError:
+            query = NCBIWWW.qblast("blastp", "nr", self.seq, hitlist_size=500)
+        except urllib.request.URLError:
             self.parent.print_("\nError:\nCould not reach NCBI's website.\n"
                                "Please check your internet connection and retry.\n")
         else:
-            of_ = open('blast_results.xml', 'w')
+            of_ = open("blast_results.xml", "w")
             of_.write(query.read())
             of_.close()
             query.close()
             self.analyse()
 
     def analyse(self):
-
-        total = list()
-        organisms_tree = dict()
+        """
+        Main method of the Compute object, calling the other methods sequentially and outputting the result back to the
+        interface in an ugly threaded way, via GObject.idle_add().
+        """
+        total = []
+        match_organisms_tree = {}
 
         if self.verbose:
             GObject.idle_add(self.parent.print_, "Setting identity threshold to {}".format(self.identity_threshold))
-            GObject.idle_add(self.parent.print_, "Setting query coverage threshold to {}".
-                             format(self.query_cover_threshold))
-
-        if self.verbose:
+            GObject.idle_add(self.parent.print_, "Setting query coverage threshold to {}"
+                                                 .format(self.query_cover_threshold))
             GObject.idle_add(self.parent.print_, "Retrieving genomes quantities at NCBI...")
+
         genomes = self.fetch_genomes_quantity()
 
         if self.verbose:
             GObject.idle_add(self.parent.print_, "Parsing BLAST results...")
 
         try:
-            results_handle = open('blast_results.xml')
-            results = NCBIXML.read(results_handle)
+            blast_output_file = open("blast_results.xml")
+            blast_output = NCBIXML.read(blast_output_file)
         except FileNotFoundError:
             self.parent.print_("\nError:\nResults file could not be found. Please BLAST a sequence and retry.\n")
         except ValueError:
@@ -384,67 +417,66 @@ class Compute(object):
                                "Please check it and retry\n")
         else:
 
-            for result in results.alignments:
-                hsp = result.hsps[0]
-                query_cover = (len(hsp.sbjct) - hsp.sbjct_start) / results.query_letters
+            for match in blast_output.alignments:
+                hsp = match.hsps[0]
+                query_cover = (len(hsp.sbjct) - hsp.sbjct_start) / blast_output.query_letters
                 identity = hsp.identities / len(hsp.sbjct)
                 if query_cover > self.query_cover_threshold and identity > self.identity_threshold:
-                    organism_list = self.fetch_organism(result.title)
-                    for organism in organism_list:
-                        if organism not in total:
-                            # If this organism's protein passed all tests, a tuple (organism's name, sequence) is added
-                            # to the main list and to an adequate sub-list.
-                            total.append(organism)
-                            # Append here to sublists
-                            genus = organism.split()[0]
-                            specie = organism.split()[1]
+                    match_organisms = self.fetch_organism(match.title)
+                    for match_organism in match_organisms:
+                        if match_organism not in total:
+                            # If this organism's protein passed all tests, add it to total list and sublists
+                            total.append(match_organism)
 
-                            organisms_tree.setdefault(genus, {})\
-                                          .setdefault(specie, {})\
-                                          .setdefault((organism, hsp.sbjct), [])
+                            genus = match_organism.split()[0]
+                            specie = match_organism.split()[1]
 
-            # Create a dictionary with genus as keys from the flat list of organisms of interest
-            organisms_of_interest_dict = dict()
-            for organism in self.organisms:
-                genus = organism.split("+")[0]
-                organisms_of_interest_dict.setdefault(genus, []).append(organism)
+                            match_organisms_tree.setdefault(genus, {})\
+                                                .setdefault(specie, {})\
+                                                .setdefault((match_organism, hsp.sbjct), [])
 
-            GObject.idle_add(self.parent.print_, '==============================')
+            # Create a tree from the flat list of organisms of interest
+            organisms_of_interest_tree = {}
+            for match_organism in self.organisms_of_interest:
+                genus = match_organism.split("+")[0].capitalize()
+                organisms_of_interest_tree.setdefault(genus, []).append(match_organism)
+
+            GObject.idle_add(self.parent.print_, "==============================")
             GObject.idle_add(self.parent.print_, "Total: {}".format(len(total)))
-            for genus_of_interest in organisms_of_interest_dict:
-                GObject.idle_add(self.parent.print_, "|-{}".format(genus_of_interest.capitalize()))
-                for specie_of_interest in organisms_of_interest_dict[genus_of_interest]:
+            for genus_of_interest in organisms_of_interest_tree:
+                GObject.idle_add(self.parent.print_, "|-{}".format(genus_of_interest))
+                for specie_of_interest in organisms_of_interest_tree[genus_of_interest]:
                     specie_of_interest = specie_of_interest.split("+")[1]
-                    # Here the dict is read through .get twice to avoid KeyErrors.
-                    # Otherwise it would be more simply expressed as
-                    # organisms_tree[genus_of_interest.capitalize][specie_of_interest]
-                    nb_species_hits = len(organisms_tree.get(genus_of_interest.capitalize(), {})
-                                                        .get(specie_of_interest, []))
+                    nb_species_hits = len(match_organisms_tree.get(genus_of_interest, {})
+                                                              .get(specie_of_interest, []))
                     nb_species_genomes = genomes["{}+{}".format(genus_of_interest, specie_of_interest)]
                     abundance = nb_species_hits / nb_species_genomes
                     GObject.idle_add(self.parent.print_, "|---{}: {}%\t\t{}/{}".format(specie_of_interest,
                                                                                        str(round(abundance * 100)),
                                                                                        str(nb_species_hits),
                                                                                        str(nb_species_genomes)))
-            GObject.idle_add(self.parent.print_, '==============================')
+            GObject.idle_add(self.parent.print_, "==============================")
 
             if self.fasta:
-                self.record_fasta(organisms_tree)
+                self.record_fasta(match_organisms_tree)
 
             if self.details:
                 GObject.idle_add(self.parent.print_, "\n\n")
-                for genus_of_interest in organisms_of_interest_dict:
+                for genus_of_interest in organisms_of_interest_tree:
                     GObject.idle_add(self.parent.print_, "\n{}\n=============================="
-                                                         .format(genus_of_interest.capitalize()))
-                    for specie_of_interest in organisms_of_interest_dict[genus_of_interest]:
+                                                         .format(genus_of_interest))
+                    for specie_of_interest in organisms_of_interest_tree[genus_of_interest]:
                         specie_of_interest = specie_of_interest.split("+")[1]
                         GObject.idle_add(self.parent.print_, "\n{}\n------------------------------"
                                                              .format(specie_of_interest))
-                        for strain in organisms_tree.get(genus_of_interest.capitalize(), {})\
-                                                    .get(specie_of_interest, []):
+                        for strain in match_organisms_tree.get(genus_of_interest, {})\
+                                                          .get(specie_of_interest, []):
                             GObject.idle_add(self.parent.print_, strain[0])
 
     def record_fasta(self, organisms_tree):
+        """
+        Outputs the whole matches tree to a FASTA formatted file in the program's directory.
+        """
         try:
             out_fasta = open("sequences.fa", "w")
         except PermissionError:
@@ -462,10 +494,9 @@ class Compute(object):
 
 def main():
     iface = Iface()
-    iface.connect("delete-event", Gtk.main_quit)
     iface.show_all()
     Gtk.main()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
