@@ -29,6 +29,10 @@ import re
 import threading
 import urllib.request
 
+# GLOBALS
+GENOMES_URL = "http://www.ncbi.nlm.nih.gov/genome/?term={}"
+GENOMES_REGEX = "genome assemblies: (\d+)"
+
 
 class Iface(Gtk.Window):
     """
@@ -334,7 +338,7 @@ class Compute(object):
         threads = []
 
         for organism in self.organisms_of_interest:
-            url = "http://www.ncbi.nlm.nih.gov/genome/?term={}".format(organism)
+            url = GENOMES_URL.format(organism)
             threads.append(threading.Thread(target=self.get_url, args=(organism, url, q)))
 
         for thread in threads:
@@ -342,7 +346,7 @@ class Compute(object):
         for thread in threads:
             thread.join()
 
-        regex_genomes = re.compile("genome assemblies: (\d+)")
+        regex_genomes = re.compile(GENOMES_REGEX)
 
         while not q.empty():
             organism, page_organism = q.get()
