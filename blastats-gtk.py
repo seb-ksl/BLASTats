@@ -19,19 +19,27 @@
 #  along with this program; if not, see <http://www.gnu.org/licenses/>.
 #
 
+# ToDo: ask Rafael about tree visualization
+
 import sys
 sys.path.append("{}/res".format(sys.path[0]))
+
+#from Bio import Phylo
+from Bio.Align.Applications import ClustalOmegaCommandline
 from Bio.Blast import NCBIWWW, NCBIXML
-from gi.repository import Gtk, GObject
+from Bio.Phylo.Applications._Fasttree import FastTreeCommandline
+
+from gi.repository import Gtk, GObject, Pango
 import pickle
 import queue
 import re
+import subprocess
 import threading
 import urllib.request
 
 # GLOBALS
 GENOMES_URL = "http://www.ncbi.nlm.nih.gov/genome/?term={}"
-GENOMES_REGEX = "genome assemblies: (\d+)"
+GENOMES_REGEX = "Genome Assembly and Annotation report \[\<b\>(\d+)\<\/b\>\]"
 
 
 class Iface(Gtk.Window):
@@ -100,6 +108,8 @@ class Iface(Gtk.Window):
         self.check_verbose = Gtk.CheckButton("Verbose")
         self.check_list = Gtk.CheckButton("List all species")
         self.check_fasta = Gtk.CheckButton("Save results in FASTA")
+        self.check_align_tree = Gtk.CheckButton("Align & Tree")
+        self.check_align_tree.connect("toggled", self.on_align_tree_click)
         grid_options.add(label_idthresh)
         grid_options.attach(label_covthresh, 0, 1, 1, 1)
         grid_options.attach(self.entry_idthresh, 1, 0, 1, 1)
@@ -109,6 +119,7 @@ class Iface(Gtk.Window):
         grid_options.attach(self.check_verbose, 3, 0, 1, 1)
         grid_options.attach(self.check_list, 3, 1, 1, 1)
         grid_options.attach(self.check_fasta, 3, 2, 1, 1)
+        grid_options.attach(self.check_align_tree, 3, 3, 1, 1)
         frame_options.add(grid_options)
 
         grid_buttons = Gtk.Grid()
@@ -128,6 +139,7 @@ class Iface(Gtk.Window):
         frame_output = Gtk.Frame(label="Output")
         self.txtview_output = Gtk.TextView()
         self.txtview_output.set_editable(False)
+        self.txtview_output.modify_font(Pango.FontDescription("mono"))
         scroll_output = Gtk.ScrolledWindow()
         scroll_output.set_min_content_height(400)
         scroll_output.set_min_content_width(400)
@@ -138,7 +150,7 @@ class Iface(Gtk.Window):
         button_help = Gtk.Button(self, stock="gtk-help")
         button_help.connect("clicked", self.help_)
         button_quit = Gtk.Button(self, stock="gtk-quit")
-        button_quit.connect("clicked", Gtk.main_quit)
+        button_quit.connect("clicked", self.quit)
         grid_footer.add(button_help)
         grid_footer.attach(button_quit, 1, 0, 1, 1)
 
@@ -157,12 +169,13 @@ class Iface(Gtk.Window):
         try:
             fhandle = open("settings", "rb")
         except FileNotFoundError:
-            pass
+            print("Settings not found")
         else:
             settings = pickle.load(fhandle)
             self.check_verbose.set_active(settings["verbose"])
             self.check_list.set_active(settings["list"])
             self.check_fasta.set_active(settings["fasta"])
+            self.check_align_tree.set_active(settings["align_tree"])
             self.entry_idthresh.set_text(settings["idthresh"])
             self.entry_covthresh.set_text(settings["covthresh"])
             for organism in settings["organisms"]:
@@ -202,6 +215,7 @@ class Iface(Gtk.Window):
         kwargs["verbose"] = self.check_verbose.get_active()
         kwargs["details"] = self.check_list.get_active()
         kwargs["fasta"] = self.check_fasta.get_active()
+        kwargs["align_tree"] = self.check_align_tree.get_active()
 
         if self.entry_idthresh.get_text() != "":
             try:
@@ -247,6 +261,13 @@ class Iface(Gtk.Window):
                 model, row = self.treeview_organism.get_selection().get_selected()
                 self.liststore_organism.remove(row)
 
+    def on_align_tree_click(self, *args):
+        if self.check_align_tree.get_active():
+            self.check_fasta.set_active(True)
+            self.check_fasta.set_sensitive(False)
+        else:
+            self.check_fasta.set_sensitive(True)
+
     def on_blast_click(self, *args):
         kwargs = self.fetch_arguments(check_seq=True)
         if kwargs.get("seq", "") != "":
@@ -272,12 +293,13 @@ class Iface(Gtk.Window):
         try:
             fhandle = open("settings", "wb")
         except PermissionError:
-            pass
+            print("Not allowed to write settings.")
         else:
             settings = {}
             settings["verbose"] = self.check_verbose.get_active()
             settings["list"] = self.check_list.get_active()
             settings["fasta"] = self.check_fasta.get_active()
+            settings["align_tree"] = self.check_align_tree.get_active()
             settings["idthresh"] = self.entry_idthresh.get_text()
             settings["covthresh"] = self.entry_covthresh.get_text()
             settings["organisms"] = []
@@ -302,14 +324,15 @@ class Compute(object):
        query sequence (given by the number of species listed in the matches tree under
        [genus_of_interest][specie_of_interest]) and the fraction of sequenced organisms it represents.
     """
-    def __init__(self, parent, organisms, seq="", verbose=False, details=False, fasta=False, identity_threshold=0.8,
-                 query_cover_threshold=0.95):
+    def __init__(self, parent, organisms, seq="", verbose=False, details=False, fasta=False, align_tree=False,
+                 identity_threshold=0.8, query_cover_threshold=0.95):
         self.parent = parent
         self.organisms_of_interest = organisms
         self.seq = seq
         self.verbose = verbose
         self.details = details
         self.fasta = fasta
+        self.align_tree = align_tree
         self.identity_threshold = identity_threshold
         self.query_cover_threshold = query_cover_threshold
 
@@ -355,8 +378,11 @@ class Compute(object):
                                                      "Dropping it from analysis".format(organism.replace("+", " ")))
                 self.organisms_of_interest.remove(organism)
             else:
-                genomes[organism] = int(regex_genomes.findall(page_organism)[0])
-
+                try:
+                    genomes[organism] = int(regex_genomes.findall(page_organism)[0])
+                except IndexError:
+                    GObject.idle_add(self.parent.print_, "Error fetching genomes quantity for {}. Dropping it from "
+                                                         "analysis".format(organism.replace("+", " ")))
         return genomes
 
     @staticmethod
@@ -364,7 +390,7 @@ class Compute(object):
         """
         Returns a list containing organisms names contained in BLAST match title.
         Names are filtered to ignore names < 2 words (like "Bacillus cereus"), names containing "group" and names
-        repeated several times in a single BLAST match title (by list(set(list))).
+        repeated several times in a single BLAST match title.
         """
 
         pattern = re.compile("\[(.*?)\]")
@@ -399,6 +425,7 @@ class Compute(object):
         """
         total = []
         match_organisms_tree = {}
+        others = []
 
         if self.verbose:
             GObject.idle_add(self.parent.print_, "Setting identity threshold to {}".format(self.identity_threshold))
@@ -407,6 +434,16 @@ class Compute(object):
             GObject.idle_add(self.parent.print_, "Retrieving genomes quantities at NCBI...")
 
         genomes = self.fetch_genomes_quantity()
+
+        # Pre-populate match_organisms_tree with species of interest
+        organisms_of_interest_tree = {}
+        for organism in self.organisms_of_interest:
+            genus = organism.split("+")[0].capitalize()
+            organisms_of_interest_tree.setdefault(genus, []).append(organism.split("+")[1])
+        for genus_of_interest in organisms_of_interest_tree:
+            match_organisms_tree[genus_of_interest] = {}
+            for specie_of_interest in organisms_of_interest_tree[genus_of_interest]:
+                match_organisms_tree[genus_of_interest][specie_of_interest] = []
 
         if self.verbose:
             GObject.idle_add(self.parent.print_, "Parsing BLAST results...")
@@ -423,46 +460,43 @@ class Compute(object):
 
             for match in blast_output.alignments:
                 hsp = match.hsps[0]
-                query_cover = (len(hsp.sbjct) - hsp.sbjct_start) / blast_output.query_letters
+                query_cover = (hsp.query_end - hsp.query_start + 1) / blast_output.query_letters
                 identity = hsp.identities / len(hsp.sbjct)
                 if query_cover > self.query_cover_threshold and identity > self.identity_threshold:
                     match_organisms = self.fetch_organism(match.title)
-                    for match_organism in match_organisms:
-                        if match_organism not in total:
-                            # If this organism's protein passed all tests, add it to total list and sublists
-                            total.append(match_organism)
+                    for organism in match_organisms:
+                        if organism not in total:
+                            # If this organism's protein passed all filters, add it to total list and sublists
+                            total.append(organism)
 
-                            genus = match_organism.split()[0]
-                            specie = match_organism.split()[1]
+                            genus = organism.split()[0]
+                            specie = organism.split()[1]
 
-                            match_organisms_tree.setdefault(genus, {})\
-                                                .setdefault(specie, {})\
-                                                .setdefault((match_organism, hsp.sbjct), [])
+                            try:
+                                match_organisms_tree[genus][specie].append((organism, hsp.sbjct))
+                            except KeyError:
+                                others.append(organism)
 
-            # Create a tree from the flat list of organisms of interest
-            organisms_of_interest_tree = {}
-            for match_organism in self.organisms_of_interest:
-                genus = match_organism.split("+")[0].capitalize()
-                organisms_of_interest_tree.setdefault(genus, []).append(match_organism)
+            for genus in match_organisms_tree:
+                for specie in match_organisms_tree[genus]:
+                    match_organisms_tree[genus][specie].sort()
+            others.sort()
 
             GObject.idle_add(self.parent.print_, "==============================")
-            GObject.idle_add(self.parent.print_, "Total: {}".format(len(total)))
+            GObject.idle_add(self.parent.print_, "Total: {}\n|".format(len(total)))
             for genus_of_interest in organisms_of_interest_tree:
                 GObject.idle_add(self.parent.print_, "|-{}".format(genus_of_interest))
                 for specie_of_interest in organisms_of_interest_tree[genus_of_interest]:
-                    specie_of_interest = specie_of_interest.split("+")[1]
                     nb_species_hits = len(match_organisms_tree.get(genus_of_interest, {})
                                                               .get(specie_of_interest, []))
                     nb_species_genomes = genomes["{}+{}".format(genus_of_interest, specie_of_interest)]
                     abundance = nb_species_hits / nb_species_genomes
-                    GObject.idle_add(self.parent.print_, "|---{}: {}%\t\t{}/{}".format(specie_of_interest,
+                    GObject.idle_add(self.parent.print_, "|---{:<20}: {:3} %{:>15}/{}".format(specie_of_interest,
                                                                                        str(round(abundance * 100)),
                                                                                        str(nb_species_hits),
                                                                                        str(nb_species_genomes)))
+                GObject.idle_add(self.parent.print_, "|\n|-Others: {}".format(len(others)))
             GObject.idle_add(self.parent.print_, "==============================")
-
-            if self.fasta:
-                self.record_fasta(match_organisms_tree)
 
             if self.details:
                 GObject.idle_add(self.parent.print_, "\n\n")
@@ -470,12 +504,21 @@ class Compute(object):
                     GObject.idle_add(self.parent.print_, "\n{}\n=============================="
                                                          .format(genus_of_interest))
                     for specie_of_interest in organisms_of_interest_tree[genus_of_interest]:
-                        specie_of_interest = specie_of_interest.split("+")[1]
                         GObject.idle_add(self.parent.print_, "\n{}\n------------------------------"
                                                              .format(specie_of_interest))
                         for strain in match_organisms_tree.get(genus_of_interest, {})\
                                                           .get(specie_of_interest, []):
                             GObject.idle_add(self.parent.print_, strain[0])
+                GObject.idle_add(self.parent.print_, "\nOthers\n==============================")
+                for other in others:
+                    GObject.idle_add(self.parent.print_, other)
+                GObject.idle_add(self.parent.print_, "\n")
+
+            if self.fasta:
+                self.record_fasta(match_organisms_tree)
+
+            if self.align_tree:
+                self.align_and_philogeny()
 
     def record_fasta(self, organisms_tree):
         """
@@ -490,10 +533,25 @@ class Compute(object):
             for genus in organisms_tree:
                 for specie in organisms_tree[genus]:
                     for organism in organisms_tree[genus][specie]:
-                        out_fasta.write(">{}\n{}\n\n".format(organism[0], organism[1]))
+                        out_fasta.write(">{}\n{}\n\n".format(organism[0].replace(" ", "_"), organism[1]))
 
             out_fasta.close()
-            GObject.idle_add(self.parent.print_, "All done.")
+
+    def align_and_philogeny(self):
+        """
+        Aligns retrieved sequences with ClustalOmega, builds a tree with FastTree and renders it with ETE2 toolkit.
+        """
+        GObject.idle_add(self.parent.print_, "Aligning sequences with ClustalOmega...")
+        clustal_commandline = ClustalOmegaCommandline(infile="sequences.fa", outfile="sequences.aln", outfmt="fa",
+                                                      force=True, verbose=True)
+        subprocess.call(str(clustal_commandline).split())
+        GObject.idle_add(self.parent.print_, "Building tree with FastTree...")
+        fasttree_commandline = FastTreeCommandline("fasttree", input="sequences.aln", out="sequences.tree")
+        subprocess.call(str(fasttree_commandline).split())
+
+        GObject.idle_add(self.parent.print_, "All done.")
+        
+        subprocess.call(["./tree_view.py"])
 
 
 def main():
