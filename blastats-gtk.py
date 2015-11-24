@@ -19,12 +19,23 @@
 #  along with this program; if not, see <http://www.gnu.org/licenses/>.
 #
 
-# ToDo: ask Rafael about tree visualization
+# FixMe: cannot fetch when only 1 genome available (cytotoxicus & toyonensis)
+#
+# ToDo: Pickle ethresh
+# ToDo: add chromosomes to analysis (not only complete genomes), but how to build entrez query on NCBI's BLAST ?
+# ToDo: add possibility to filter by e-value.
+# ToDo: refine name fetching. For example, "Clostridium difficile complete genome, strain M120"
+#       will be treated as "Clostridium difficile"
+# ToDo: decrease number of hsps per hit in BLAST arguments
+# ToDo: enhance GUI so user can choose if aligning HSPs or retrieved CDSs
+# ToDo: capture memory overflow when parsing too big BLAST results
+# ToDo: conditional imports with try
 
 import sys
 sys.path.append("{}/res".format(sys.path[0]))
 
-#from Bio import Phylo
+# from Bio import Phylo
+from Bio import Entrez, SeqIO
 from Bio.Align.Applications import ClustalOmegaCommandline
 from Bio.Blast import NCBIWWW, NCBIXML
 from Bio.Phylo.Applications._Fasttree import FastTreeCommandline
@@ -38,8 +49,10 @@ import threading
 import urllib.request
 
 # GLOBALS
-GENOMES_URL = "http://www.ncbi.nlm.nih.gov/genome/?term={}"
-GENOMES_REGEX = "Genome Assembly and Annotation report \[\<b\>(\d+)\<\/b\>\]"
+GENOMES_URL = "http://www.ncbi.nlm.nih.gov/genome/genomes/{}"
+GENOMES_REGEX = "Complete \[(\d+)\]"
+# Settings
+Entrez.email = "sgelis@jouy.inra.fr"
 
 
 class Iface(Gtk.Window):
@@ -90,6 +103,7 @@ class Iface(Gtk.Window):
         label_idthresh = Gtk.Label("Identity threshold: ")
         label_idthresh.set_alignment(0, 0.5)
         label_covthresh = Gtk.Label("Coverage threshold: ")
+        label_ethresh = Gtk.Label("E-value threshold: ")
         label_pc1 = Gtk.Label("%         ")
         label_pc2 = Gtk.Label("%         ")
         self.entry_idthresh = Gtk.Entry()
@@ -105,6 +119,11 @@ class Iface(Gtk.Window):
         self.entry_covthresh.set_max_width_chars(3)
         self.entry_covthresh.set_halign(Gtk.Align.START)
         self.entry_covthresh.set_placeholder_text("95")
+        self.entry_ethresh = Gtk.Entry()
+        self.entry_ethresh.set_width_chars(5)
+        self.entry_ethresh.set_max_width_chars(5)
+        self.entry_ethresh.set_halign(Gtk.Align.START)
+        self.entry_ethresh.set_placeholder_text("1e-5")
         self.check_verbose = Gtk.CheckButton("Verbose")
         self.check_list = Gtk.CheckButton("List all species")
         self.check_fasta = Gtk.CheckButton("Save results in FASTA")
@@ -112,8 +131,10 @@ class Iface(Gtk.Window):
         self.check_align_tree.connect("toggled", self.on_align_tree_click)
         grid_options.add(label_idthresh)
         grid_options.attach(label_covthresh, 0, 1, 1, 1)
+        grid_options.attach(label_ethresh, 0, 2, 1, 1)
         grid_options.attach(self.entry_idthresh, 1, 0, 1, 1)
         grid_options.attach(self.entry_covthresh, 1, 1, 1, 1)
+        grid_options.attach(self.entry_ethresh, 1, 2, 1, 1)
         grid_options.attach(label_pc1, 2, 0, 1, 1)
         grid_options.attach(label_pc2, 2, 1, 1, 1)
         grid_options.attach(self.check_verbose, 3, 0, 1, 1)
@@ -178,6 +199,7 @@ class Iface(Gtk.Window):
             self.check_align_tree.set_active(settings["align_tree"])
             self.entry_idthresh.set_text(settings["idthresh"])
             self.entry_covthresh.set_text(settings["covthresh"])
+            self.entry_ethresh.set_text(settings["ethresh"])
             for organism in settings["organisms"]:
                 self.list_organisms.append(organism)
                 self.liststore_organism.append((organism,))
@@ -234,6 +256,15 @@ class Iface(Gtk.Window):
                     self.print_("Error:\nQuery coverage threshold must be between 0 and 100")
             except ValueError:
                 self.parent.print_("Error:\nPlease provide a query coverage threshold")
+
+        if self.entry_ethresh.get_text() != "":
+            try:
+                if 1 >= float(self.entry_ethresh.get_text()) >= 0:
+                    kwargs["e_threshold"] = float(self.entry_ethresh.get_text())
+                else:
+                    self.print_("Error:\nE-value threshold must be between 0 and 1")
+            except ValueError:
+                self.parent.print_("Error:\nPlease provide an E-value threshold")
 
         return kwargs
 
@@ -302,6 +333,7 @@ class Iface(Gtk.Window):
             settings["align_tree"] = self.check_align_tree.get_active()
             settings["idthresh"] = self.entry_idthresh.get_text()
             settings["covthresh"] = self.entry_covthresh.get_text()
+            settings["ethresh"] = self.entry_ethresh.get_text()
             settings["organisms"] = []
             for organism in self.liststore_organism:
                 settings["organisms"].append(organism[0])
@@ -325,7 +357,7 @@ class Compute(object):
        [genus_of_interest][specie_of_interest]) and the fraction of sequenced organisms it represents.
     """
     def __init__(self, parent, organisms, seq="", verbose=False, details=False, fasta=False, align_tree=False,
-                 identity_threshold=0.8, query_cover_threshold=0.95):
+                 identity_threshold=0.8, query_cover_threshold=0.95, e_threshold=1e-5):
         self.parent = parent
         self.organisms_of_interest = organisms
         self.seq = seq
@@ -335,11 +367,21 @@ class Compute(object):
         self.align_tree = align_tree
         self.identity_threshold = identity_threshold
         self.query_cover_threshold = query_cover_threshold
+        self.e_threshold = e_threshold
 
-    def get_url(self, organism, url, q):
+    def get_url(self, organism, q):
         """
         Threaded method that gets a URL and puts its content in a threaded queue.
         """
+
+        entrez_handle = Entrez.esearch(db="genome", term="{}[Organism]".format(organism))
+        try:
+            organism_id = Entrez.read(entrez_handle)["IdList"][0]
+        except IndexError:
+            q.put((organism, None))
+        else:
+            url = GENOMES_URL.format(organism_id)
+
         try:
             # Decode because .read() returns a byte string while re.findall() takes unicode strings
             page = urllib.request.urlopen(url).read().decode()
@@ -356,13 +398,13 @@ class Compute(object):
         URL requests are threaded via get_url(), and the results queue is read after all threads are done.
         """
 
-        genomes = {}
+        #genomes = {}
+        genomes = {"Bacillus+toyonensis": 1, "Bacillus+bombysepticus": 1, "Bacillus+cytotoxicus": 1}
         q = queue.Queue()
         threads = []
 
         for organism in self.organisms_of_interest:
-            url = GENOMES_URL.format(organism)
-            threads.append(threading.Thread(target=self.get_url, args=(organism, url, q)))
+            threads.append(threading.Thread(target=self.get_url, args=(organism, q)))
 
         for thread in threads:
             thread.start()
@@ -373,8 +415,8 @@ class Compute(object):
 
         while not q.empty():
             organism, page_organism = q.get()
-            if isinstance(page_organism, type(None)) or not "Organism Overview" in page_organism:
-                GObject.idle_add(self.parent.print_, "Could not find organism '{}' in NCBI's database. "
+            if isinstance(page_organism, type(None)) or "Organism Overview" not in page_organism:
+                GObject.idle_add(self.parent.print_, "Could not find '{}' in NCBI's database. "
                                                      "Dropping it from analysis".format(organism.replace("+", " ")))
                 self.organisms_of_interest.remove(organism)
             else:
@@ -383,6 +425,8 @@ class Compute(object):
                 except IndexError:
                     GObject.idle_add(self.parent.print_, "Error fetching genomes quantity for {}. Dropping it from "
                                                          "analysis".format(organism.replace("+", " ")))
+                    if organism != "Bacillus+toyonensis" and organism != "Bacillus+bombysepticus" and organism != "Bacillus+cytotoxicus":
+                        self.organisms_of_interest.remove(organism)
         return genomes
 
     @staticmethod
@@ -393,13 +437,21 @@ class Compute(object):
         repeated several times in a single BLAST match title.
         """
 
-        pattern = re.compile("\[(.*?)\]")
-        matchlist = set()
-        for match in pattern.findall(string):
-            if "group" not in match and len(match.split()) > 2:
-                matchlist.add(match)
+        # pattern = re.compile("\[(.*?)\]")
+        # matchlist = set()
+        # for match in pattern.findall(string):
+        #     if "group" not in match and len(match.split()) > 2:
+        #         matchlist.add(match)
 
-        return list(matchlist)
+        organism = string.split("|")[-1].split(",")[0].lstrip()
+        if "genom" in organism:
+            organism = organism[:organism.find("genom")].rstrip()
+        if "complete" in organism:
+            organism = organism[:organism.find("complete")].rstrip()
+        if "chromosome" in organism:
+            organism = organism[:organism.find("chromosome")].rstrip()
+
+        return organism
 
     def blast(self):
         """
@@ -407,7 +459,7 @@ class Compute(object):
         """
 
         try:
-            query = NCBIWWW.qblast("blastp", "nr", self.seq, hitlist_size=500)
+            query = NCBIWWW.qblast("tblastn", "nr", self.seq, entrez_query="complete genome[Status] NOT plasmid[Title]", hitlist_size=500, alignments=1)
         except urllib.request.URLError:
             self.parent.print_("\nError:\nCould not reach NCBI's website.\n"
                                "Please check your internet connection and retry.\n")
@@ -462,20 +514,30 @@ class Compute(object):
                 hsp = match.hsps[0]
                 query_cover = (hsp.query_end - hsp.query_start + 1) / blast_output.query_letters
                 identity = hsp.identities / len(hsp.sbjct)
-                if query_cover > self.query_cover_threshold and identity > self.identity_threshold:
-                    match_organisms = self.fetch_organism(match.title)
-                    for organism in match_organisms:
-                        if organism not in total:
-                            # If this organism's protein passed all filters, add it to total list and sublists
-                            total.append(organism)
+                evalue = hsp.expect
+                if query_cover > self.query_cover_threshold and identity > self.identity_threshold and evalue < self.e_threshold \
+                and "*" not in hsp.sbjct:
 
-                            genus = organism.split()[0]
-                            specie = organism.split()[1]
+                    # If this organism's protein passed all filters, add it to total list and sublists
+                    organism = self.fetch_organism(match.title)
 
-                            try:
-                                match_organisms_tree[genus][specie].append((organism, hsp.sbjct))
-                            except KeyError:
-                                others.append(organism)
+                    if organism in total:
+                        while organism in total:
+                            organism += "_"
+                    
+                    total.append(organism)
+
+                    genus = organism.split()[0]
+                    specie = organism.split()[1]
+
+                    try:
+                        if self.fasta:
+                            # match_organisms_tree[genus][specie].append((organism, self.cds_from_hsp(match.title, hsp.sbjct_start)))
+                            match_organisms_tree[genus][specie].append((organism, hsp.sbjct))
+                        else:
+                            match_organisms_tree[genus][specie].append((organism,))
+                    except KeyError:
+                        others.append(organism)
 
             for genus in match_organisms_tree:
                 for specie in match_organisms_tree[genus]:
@@ -495,7 +557,8 @@ class Compute(object):
                                                                                        str(round(abundance * 100)),
                                                                                        str(nb_species_hits),
                                                                                        str(nb_species_genomes)))
-                GObject.idle_add(self.parent.print_, "|\n|-Others: {}".format(len(others)))
+                GObject.idle_add(self.parent.print_, "|")
+            GObject.idle_add(self.parent.print_, "|-Others: {}".format(len(others)))
             GObject.idle_add(self.parent.print_, "==============================")
 
             if self.details:
@@ -522,7 +585,7 @@ class Compute(object):
 
     def record_fasta(self, organisms_tree):
         """
-        Outputs the whole matches tree to a FASTA formatted file in the program's directory.
+        Retrieves CDSs that generated significant hits and saves them as FASTA in working directory.
         """
         try:
             out_fasta = open("sequences.fa", "w")
@@ -536,6 +599,22 @@ class Compute(object):
                         out_fasta.write(">{}\n{}\n\n".format(organism[0].replace(" ", "_"), organism[1]))
 
             out_fasta.close()
+
+    def cds_from_hsp(self, title, location):
+
+        pattern = re.compile("\|(.*?)\|")
+        accession = pattern.findall(title)[-1]
+
+        handle = Entrez.efetch(db="nucleotide", id=accession, rettype="gb", seq_start=location, seq_stop=location+1)
+        record = SeqIO.read(handle, "genbank")
+        try:
+            cds = record.features[-1].qualifiers["translation"][0]
+        except KeyError:
+            return None
+        else:
+            print(title, "\n", cds, "\n\n")
+            return cds
+
 
     def align_and_philogeny(self):
         """
